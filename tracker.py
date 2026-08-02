@@ -6,80 +6,117 @@ from email.mime.text import MIMEText
 from email.header import Header
 import requests
 from bs4 import BeautifulSoup
-from playwright.sync_api import sync_playwright
+from dotenv import load_dotenv
+
+load_dotenv()
 
 def clean_price_text(text):
-    """Extracts numbers from messy text like '₹85,399.00' -> 85399.0"""
+    """Extracts clean float numbers from text like '₹85,399.00' -> 85399.0"""
     try:
         cleaned = re.sub(r'[^\d.]', '', text.replace(',', ''))
         return float(cleaned)
     except (ValueError, TypeError):
         return None
 
-def fetch_price_stealth(product, browser):
-    url = product.get("url", "")
+def fetch_price_via_proxy(product):
+    """Fetches product HTML via ScraperAPI proxy network with optimized platform routing."""
+    raw_url = product.get("url", "")
     platform = product.get("platform", "").lower()
     name = product.get("name", "Product")
+    api_key = os.getenv("SCRAPER_API_KEY")
 
-    if not url:
+    if not raw_url:
         return None
 
-    # Mobile Web User Agent bypasses Datacenter Bot Protection on GitHub Actions
-    context = browser.new_context(
-        user_agent="Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36",
-        viewport={"width": 412, "height": 915},
-        locale="en-IN",
-        timezone_id="Asia/Kolkata"
-    )
+    # Enable JS rendering ONLY for Amazon; use fast standard proxy for Flipkart & BuyHatke to prevent 500 timeouts
+    if api_key:
+        print(f" -> Fetching via ScraperAPI proxy...")
+        if platform in ["flipkart", "buyhatke"]:
+            proxy_url = f"https://api.scraperapi.com?api_key={api_key}&url={raw_url}"
+        else:
+            proxy_url = f"https://api.scraperapi.com?api_key={api_key}&url={raw_url}&render=true"
+    else:
+        print(f" -> Fetching directly...")
+        proxy_url = raw_url
 
-    page = context.new_page()
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+    }
 
     try:
-        print(f" -> Navigating to URL...")
-        # 'commit' means we stop waiting as soon as initial HTML receives response, avoiding timeout hangs!
-        page.goto(url, wait_until="commit", timeout=30000)
-        page.wait_for_timeout(4000)
+        response = requests.get(proxy_url, headers=headers, timeout=60)
+        if response.status_code != 200:
+            print(f"[{platform.upper()}] HTTP Error {response.status_code}")
+            return None
 
-        html_content = page.content()
-        soup = BeautifulSoup(html_content, "html.parser")
+        soup = BeautifulSoup(response.text, "html.parser")
 
-        # Broad price selectors covering mobile & desktop structures
-        selectors = [
-            "span.a-price-whole",
-            "span.a-offscreen",
-            "div.Nx9bqj",
-            "div._30jeq3",
-            "#price_val",
-            ".current-price",
-            "span.price-val",
-            ".product-price"
-        ]
+        # --- TIER 1: Explicit High-Priority Selectors ---
+        selectors = []
+        if platform == "amazon":
+            selectors = [
+                "span.a-price-whole",
+                "span#priceblock_ourprice",
+                ".apexPriceToPay span.a-offscreen",
+                "span.a-offscreen"
+            ]
+        elif platform == "flipkart":
+            selectors = [
+                "div.Nx9bqj._16JThd",
+                "div.Nx9bqj",
+                "div._30jeq3._16JThd",
+                "div._30jeq3"
+            ]
+        elif platform == "buyhatke":
+            selectors = [
+                "#price_val",
+                ".current-price",
+                "span.price-val",
+                ".product-price",
+                "div[class*='price']"
+            ]
+        else:
+            selectors = product.get("selectors", [".price", "#price", "span.price"])
 
+        # Try Tier 1 Selectors
         for selector in selectors:
             elements = soup.select(selector)
             for element in elements:
+                # Exclude EMI / Discount / Exchange text blocks
+                parent_text = element.parent.text if element.parent else ""
+                if any(k in parent_text.lower() for k in ["emi", "off", "exchange", "save", "per month"]):
+                    continue
+                
                 price = clean_price_text(element.text)
-                if price and 10000 <= price <= 300000:
-                    context.close()
+                if price and 50000 <= price <= 150000:
                     return price
 
-        # Regex Fallback for price extraction
-        page_text = soup.get_text()
-        raw_matches = re.findall(r'(?:₹|Rs\.?)\s*([\d,]+)', page_text)
-        valid_prices = [clean_price_text(m) for m in raw_matches if clean_price_text(m) and 10000 <= clean_price_text(m) <= 300000]
+        # --- TIER 2: Contextual Container Parsing Fallback ---
+        print(f"[{platform.upper()}] Specific selectors missed. Running Context-Scoped Parser...")
+        
+        main_containers = soup.find_all(['div', 'main', 'section', 'span'])
+        valid_prices = []
+
+        for container in main_containers:
+            text = container.get_text()
+            if any(k in text.lower() for k in ["emi", "off", "exchange", "per month"]):
+                continue
+            raw_matches = re.findall(r'(?:₹|Rs\.?)\s*([\d,]+)', text)
+            for m in raw_matches:
+                val = clean_price_text(m)
+                if val and 50000 <= val <= 150000:
+                    valid_prices.append(val)
 
         if valid_prices:
+            # Pick the most frequently reported valid price
             most_common = max(set(valid_prices), key=valid_prices.count)
-            context.close()
             return most_common
 
-        print(f"[{platform.upper()}] Price element not found.")
-        context.close()
+        print(f"[{platform.upper()}] Could not locate valid product price.")
         return None
 
     except Exception as e:
         print(f"[{platform.upper()}] Error fetching {name}: {e}")
-        context.close()
         return None
 
 def send_email_alert(product, current_price):
@@ -152,33 +189,25 @@ def run_tracker():
     with open("products.json", "r") as f:
         products = json.load(f)
 
-    print(f"--- Tracking {len(products)} products with Stealth Playwright ---\n")
+    print(f"--- Tracking {len(products)} products via Proxy Network ---\n")
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=True,
-            args=["--no-sandbox", "--disable-setuid-sandbox"]
-        )
+    for product in products:
+        name = product.get("name", "Unknown Product")
+        platform = product.get("platform", "Unknown")
+        target_price = product.get("target_price", 0)
 
-        for product in products:
-            name = product.get("name", "Unknown Product")
-            platform = product.get("platform", "Unknown")
-            target_price = product.get("target_price", 0)
+        print(f"Checking: {name} ({platform.capitalize()})...")
+        current_price = fetch_price_via_proxy(product)
 
-            print(f"Checking: {name} ({platform.capitalize()})...")
-            current_price = fetch_price_stealth(product, browser)
-
-            if current_price:
-                print(f" -> Current Price: ₹{current_price:,.2f} | Target: ₹{target_price:,.2f}")
-                if current_price <= target_price:
-                    print(" 🚨 Price drop detected! Sending alerts...")
-                    send_telegram_alert(product, current_price)
-                    send_email_alert(product, current_price)
-            else:
-                print(" -> Could not retrieve price.")
-            print("-" * 40)
-
-        browser.close()
+        if current_price:
+            print(f" -> Current Price: ₹{current_price:,.2f} | Target: ₹{target_price:,.2f}")
+            if current_price <= target_price:
+                print(" 🚨 Price drop detected! Sending alerts...")
+                send_telegram_alert(product, current_price)
+                send_email_alert(product, current_price)
+        else:
+            print(" -> Could not retrieve price.")
+        print("-" * 40)
 
 if __name__ == "__main__":
     run_tracker()
