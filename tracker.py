@@ -4,49 +4,42 @@ import re
 import smtplib
 import requests
 from bs4 import BeautifulSoup
+from playwright.sync_api import sync_playwright
 
 def clean_price_text(text):
-    """Extracts numbers from messy text like '₹1,999' or '85,000' -> 85000.0"""
+    """Extracts clean float numbers from text like '₹85,999.00' -> 85999.0"""
     try:
         cleaned = re.sub(r'[^\d.]', '', text)
         return float(cleaned)
     except (ValueError, TypeError):
         return None
 
-def fetch_price(product):
-    """Fetches product page and extracts the price based on platform."""
-    # Rotate User-Agents to prevent 403 Forbidden errors
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Cache-Control": "max-age=0",
-    }
-    
-    platform = product.get("platform", "").lower()
+def fetch_price_with_playwright(product, browser):
+    """Uses a real headless Chrome browser to bypass 403s and renders JS content."""
     url = product.get("url", "")
+    platform = product.get("platform", "").lower()
+    name = product.get("name", "Product")
 
     if not url:
-        print("Missing URL for product.")
         return None
 
-    try:
-        session = requests.Session()
-        response = session.get(url, headers=headers, timeout=15)
-        
-        if response.status_code != 200:
-            print(f"[{platform.upper()}] HTTP Error {response.status_code}")
-            return None
+    page = browser.new_page(
+        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+    )
 
-        soup = BeautifulSoup(response.text, "html.parser")
-        
-        # Platform-specific HTML price selectors
+    try:
+        # Load page and wait for DOM content
+        page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        page.wait_for_timeout(3000)  # Wait 3 seconds for dynamic JS rendering
+
+        html_content = page.content()
+        soup = BeautifulSoup(html_content, "html.parser")
+
         selectors = []
         if platform == "amazon":
             selectors = [
                 "span.a-price-whole",
                 "span#priceblock_ourprice",
-                "span#priceblock_dealprice",
                 "span.a-offscreen",
                 ".apexPriceToPay span.a-offscreen"
             ]
@@ -60,36 +53,36 @@ def fetch_price(product):
             selectors = [
                 "div.current-price",
                 "span.price-val",
-                ".product-price",
-                "#price_val"
+                "#price_val",
+                ".product-price"
             ]
         else:
-            # Generic fallback selectors for other sites
             selectors = product.get("selectors", [".price", "#price", "span.price"])
 
-        # Try each selector sequentially
         for selector in selectors:
             elements = soup.select(selector)
             for element in elements:
                 price = clean_price_text(element.text)
-                if price and price > 0:
+                if price and price > 100:  # Valid price filter
+                    page.close()
                     return price
 
-        print(f"[{platform.upper()}] Could not locate price element in HTML.")
+        print(f"[{platform.upper()}] Could not find price selector in page HTML.")
+        page.close()
         return None
 
     except Exception as e:
-        print(f"Error fetching {product.get('name', 'Product')}: {e}")
+        print(f"[{platform.upper()}] Playwright error fetching {name}: {e}")
+        page.close()
         return None
 
 def send_email_alert(product, current_price):
-    """Sends email alert via Gmail SMTP."""
     sender_email = os.getenv("GMAIL_USER")
     app_password = os.getenv("GMAIL_APP_PASSWORD")
     recipient_email = os.getenv("ALERT_EMAIL")
 
     if not all([sender_email, app_password, recipient_email]):
-        print(" -> Gmail credentials missing in environment. Skipping email.")
+        print(" -> Gmail credentials missing. Skipping email.")
         return
 
     product_name = product.get("name", "Tracked Item")
@@ -110,15 +103,14 @@ def send_email_alert(product, current_price):
             server.sendmail(sender_email, recipient_email, message)
         print(f" -> Email alert sent for {product_name}!")
     except Exception as e:
-        print(f" -> Failed to send email alert: {e}")
+        print(f" -> Failed to send email: {e}")
 
 def send_telegram_alert(product, current_price):
-    """Sends a formatted notification via Telegram Bot API."""
     bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
 
     if not (bot_token and chat_id):
-        print(" -> Telegram secrets missing in environment. Skipping Telegram.")
+        print(" -> Telegram credentials missing. Skipping Telegram.")
         return
 
     product_name = product.get("name", "Tracked Item")
@@ -147,33 +139,37 @@ def send_telegram_alert(product, current_price):
         print(f" -> Failed to send Telegram alert: {e}")
 
 def run_tracker():
-    """Main loop to check all products in products.json"""
     if not os.path.exists("products.json"):
-        print("Error: products.json file missing!")
+        print("Error: products.json missing!")
         return
 
     with open("products.json", "r") as f:
         products = json.load(f)
 
-    print(f"--- Tracking {len(products)} products ---\n")
+    print(f"--- Tracking {len(products)} products with Playwright ---\n")
 
-    for product in products:
-        name = product.get("name", "Unknown Product")
-        platform = product.get("platform", "Unknown Platform")
-        target_price = product.get("target_price", 0)
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
 
-        print(f"Checking: {name} ({platform.capitalize()})...")
-        current_price = fetch_price(product)
-        
-        if current_price:
-            print(f" -> Current Price: ₹{current_price} | Target: ₹{target_price}")
-            if current_price <= target_price:
-                print(f" 🚨 Price drop detected! Sending alerts...")
-                send_telegram_alert(product, current_price)
-                send_email_alert(product, current_price)
-        else:
-            print(f" -> Could not retrieve price.")
-        print("-" * 40)
+        for product in products:
+            name = product.get("name", "Unknown Product")
+            platform = product.get("platform", "Unknown")
+            target_price = product.get("target_price", 0)
+
+            print(f"Checking: {name} ({platform.capitalize()})...")
+            current_price = fetch_price_with_playwright(product, browser)
+
+            if current_price:
+                print(f" -> Current Price: ₹{current_price:,.2f} | Target: ₹{target_price:,.2f}")
+                if current_price <= target_price:
+                    print(" 🚨 Price drop detected! Sending alerts...")
+                    send_telegram_alert(product, current_price)
+                    send_email_alert(product, current_price)
+            else:
+                print(" -> Could not retrieve price.")
+            print("-" * 40)
+
+        browser.close()
 
 if __name__ == "__main__":
     run_tracker()
