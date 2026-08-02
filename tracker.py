@@ -9,7 +9,7 @@ from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 
 def clean_price_text(text):
-    """Extracts clean float numbers from text like '₹85,399.00' -> 85399.0"""
+    """Extracts numbers from messy text like '₹85,399.00' -> 85399.0"""
     try:
         cleaned = re.sub(r'[^\d.]', '', text.replace(',', ''))
         return float(cleaned)
@@ -17,7 +17,6 @@ def clean_price_text(text):
         return None
 
 def fetch_price_stealth(product, browser):
-    """Uses Playwright with a two-tier extraction pipeline for resilient price parsing."""
     url = product.get("url", "")
     platform = product.get("platform", "").lower()
     name = product.get("name", "Product")
@@ -25,97 +24,56 @@ def fetch_price_stealth(product, browser):
     if not url:
         return None
 
+    # Mobile Web User Agent bypasses Datacenter Bot Protection on GitHub Actions
     context = browser.new_context(
-        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-        viewport={"width": 1366, "height": 768},
+        user_agent="Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36",
+        viewport={"width": 412, "height": 915},
         locale="en-IN",
         timezone_id="Asia/Kolkata"
     )
 
     page = context.new_page()
 
-    # Mask automation flags
-    page.add_init_script("""
-        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-    """)
-
     try:
         print(f" -> Navigating to URL...")
-        page.goto(url, wait_until="domcontentloaded", timeout=45000)
-        
-        # Scroll down slightly and wait for dynamic JavaScript to load
-        page.evaluate("window.scrollBy(0, 400)")
-        page.wait_for_timeout(5000)
+        # 'commit' means we stop waiting as soon as initial HTML receives response, avoiding timeout hangs!
+        page.goto(url, wait_until="commit", timeout=30000)
+        page.wait_for_timeout(4000)
 
         html_content = page.content()
         soup = BeautifulSoup(html_content, "html.parser")
 
-        # --- TIER 1: Standard CSS Selectors ---
-        selectors = []
-        if platform == "amazon":
-            selectors = [
-                "span.a-price-whole",
-                "span#priceblock_ourprice",
-                "span#priceblock_dealprice",
-                "span.a-offscreen",
-                ".apexPriceToPay span.a-offscreen",
-                "span.a-color-price"
-            ]
-        elif platform == "flipkart":
-            selectors = [
-                "div.Nx9bqj._16JThd",
-                "div.Nx9bqj",
-                "div._30jeq3._16JThd",
-                "div._30jeq3",
-                "div._16JThd",
-                "div.C23321",
-                "div._25bR30",
-                "div.UOC20"
-            ]
-        elif platform == "buyhatke":
-            selectors = [
-                "#price_val",
-                ".current-price",
-                "span.price-val",
-                ".product-price",
-                "div.price-box",
-                ".p-price",
-                "span.amount",
-                "div[class*='price']",
-                ".top-price"
-            ]
-        else:
-            selectors = product.get("selectors", [".price", "#price", "span.price"])
+        # Broad price selectors covering mobile & desktop structures
+        selectors = [
+            "span.a-price-whole",
+            "span.a-offscreen",
+            "div.Nx9bqj",
+            "div._30jeq3",
+            "#price_val",
+            ".current-price",
+            "span.price-val",
+            ".product-price"
+        ]
 
-        # Attempt Tier 1 extraction
         for selector in selectors:
             elements = soup.select(selector)
             for element in elements:
                 price = clean_price_text(element.text)
-                if price and price > 1000:  # Valid product price threshold
+                if price and 10000 <= price <= 300000:
                     context.close()
                     return price
 
-        # --- TIER 2: Regex DOM Text Fallback ---
-        # Search page text for price patterns like ₹85,399 or Rs. 85399
-        print(f"[{platform.upper()}] Selectors failed. Trying Tier 2 Regex Fallback...")
+        # Regex Fallback for price extraction
         page_text = soup.get_text()
-        raw_matches = re.findall(r'(?:₹|Rs\.?)\s*([\d,]+(?:\.\d{2})?)', page_text)
-        
-        valid_prices = []
-        for match in raw_matches:
-            val = clean_price_text(match)
-            # Filter out tiny values (like discounts or delivery fees) and huge unreal numbers
-            if val and 10000 <= val <= 300000:
-                valid_prices.append(val)
+        raw_matches = re.findall(r'(?:₹|Rs\.?)\s*([\d,]+)', page_text)
+        valid_prices = [clean_price_text(m) for m in raw_matches if clean_price_text(m) and 10000 <= clean_price_text(m) <= 300000]
 
         if valid_prices:
-            # Pick the most frequently occurring valid price on the page
-            most_common_price = max(set(valid_prices), key=valid_prices.count)
+            most_common = max(set(valid_prices), key=valid_prices.count)
             context.close()
-            return most_common_price
+            return most_common
 
-        print(f"[{platform.upper()}] Price element not found in rendered DOM.")
+        print(f"[{platform.upper()}] Price element not found.")
         context.close()
         return None
 
@@ -125,7 +83,6 @@ def fetch_price_stealth(product, browser):
         return None
 
 def send_email_alert(product, current_price):
-    """Sends UTF-8 encoded email alert via Gmail SMTP."""
     sender_email = os.getenv("GMAIL_USER")
     app_password = os.getenv("GMAIL_APP_PASSWORD")
     recipient_email = os.getenv("ALERT_EMAIL")
@@ -139,11 +96,7 @@ def send_email_alert(product, current_price):
     platform = product.get("platform", "E-Commerce").capitalize()
 
     subject = f"🚨 Price Drop Alert: {product_name} at ₹{current_price:,.2f}!"
-    body = (
-        f"Good news!\n\n"
-        f"The price for '{product_name}' dropped to ₹{current_price:,.2f} (Target: ₹{target_price:,.2f}) on {platform}.\n\n"
-        f"Buy now: {product.get('url', '')}"
-    )
+    body = f"Good news!\n\nThe price for '{product_name}' dropped to ₹{current_price:,.2f} (Target: ₹{target_price:,.2f}) on {platform}.\n\nBuy now: {product.get('url', '')}"
 
     msg = MIMEText(body, 'plain', 'utf-8')
     msg['Subject'] = Header(subject, 'utf-8')
@@ -159,7 +112,6 @@ def send_email_alert(product, current_price):
         print(f" -> Failed to send email: {e}")
 
 def send_telegram_alert(product, current_price):
-    """Sends notification via Telegram Bot API."""
     bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
 
@@ -205,11 +157,7 @@ def run_tracker():
     with sync_playwright() as p:
         browser = p.chromium.launch(
             headless=True,
-            args=[
-                "--disable-blink-features=AutomationControlled",
-                "--no-sandbox",
-                "--disable-setuid-sandbox"
-            ]
+            args=["--no-sandbox", "--disable-setuid-sandbox"]
         )
 
         for product in products:
