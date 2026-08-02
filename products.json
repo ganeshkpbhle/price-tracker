@@ -13,6 +13,7 @@
   },
   {
     "name":"Samsung Galaxy Tab S10 Plus (FlipKart)",
+    "platform": "FlipKart",
     "url":"https://www.flipkart.com/samsung-galaxy-tab-s10-s-pen-12-gb-ram-256-rom-12-4-inch-wi-fi-only-gaming-mediatek-dimensity-9300-tablet-platinum-silver/p/itm07fddd91caecf",
     "target_price": 80000.00
   }

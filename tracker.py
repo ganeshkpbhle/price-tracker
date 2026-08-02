@@ -6,7 +6,7 @@ import requests
 from bs4 import BeautifulSoup
 
 def clean_price_text(text):
-    """Extracts numbers from messy text like '₹1,999' -> 1999.0"""
+    """Extracts numbers from messy text like '₹1,999' or '85,000' -> 85000.0"""
     try:
         cleaned = re.sub(r'[^\d.]', '', text)
         return float(cleaned)
@@ -14,40 +14,72 @@ def clean_price_text(text):
         return None
 
 def fetch_price(product):
-    """Fetches product page and finds the price based on platform."""
+    """Fetches product page and extracts the price based on platform."""
+    # Rotate User-Agents to prevent 403 Forbidden errors
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
+        "Cache-Control": "max-age=0",
     }
     
+    platform = product.get("platform", "").lower()
+    url = product.get("url", "")
+
+    if not url:
+        print("Missing URL for product.")
+        return None
+
     try:
-        response = requests.get(product["url"], headers=headers, timeout=12)
+        session = requests.Session()
+        response = session.get(url, headers=headers, timeout=15)
+        
         if response.status_code != 200:
-            print(f"[{product['platform'].upper()}] HTTP Error {response.status_code}")
+            print(f"[{platform.upper()}] HTTP Error {response.status_code}")
             return None
 
         soup = BeautifulSoup(response.text, "html.parser")
         
         # Platform-specific HTML price selectors
         selectors = []
-        if product["platform"] == "amazon":
-            selectors = ["span.a-price-whole", "span#priceblock_ourprice"]
-        elif product["platform"] == "flipkart":
-            selectors = ["div.Nx9bqj", "div._30jeq3"]
+        if platform == "amazon":
+            selectors = [
+                "span.a-price-whole",
+                "span#priceblock_ourprice",
+                "span#priceblock_dealprice",
+                "span.a-offscreen",
+                ".apexPriceToPay span.a-offscreen"
+            ]
+        elif platform == "flipkart":
+            selectors = [
+                "div.Nx9bqj",
+                "div._30jeq3",
+                "div._16JThd"
+            ]
+        elif platform == "buyhatke":
+            selectors = [
+                "div.current-price",
+                "span.price-val",
+                ".product-price",
+                "#price_val"
+            ]
+        else:
+            # Generic fallback selectors for other sites
+            selectors = product.get("selectors", [".price", "#price", "span.price"])
 
-        # Try each selector until we find a price
+        # Try each selector sequentially
         for selector in selectors:
-            element = soup.select_one(selector)
-            if element:
+            elements = soup.select(selector)
+            for element in elements:
                 price = clean_price_text(element.text)
-                if price:
+                if price and price > 0:
                     return price
 
-        print(f"[{product['platform'].upper()}] Could not locate price element.")
+        print(f"[{platform.upper()}] Could not locate price element in HTML.")
         return None
 
     except Exception as e:
-        print(f"Error fetching {product['name']}: {e}")
+        print(f"Error fetching {product.get('name', 'Product')}: {e}")
         return None
 
 def send_email_alert(product, current_price):
@@ -60,11 +92,15 @@ def send_email_alert(product, current_price):
         print(" -> Gmail credentials missing in environment. Skipping email.")
         return
 
-    subject = f"🚨 Price Drop Alert: {product['name']} at ₹{current_price:,.2f}!"
+    product_name = product.get("name", "Tracked Item")
+    target_price = product.get("target_price", 0)
+    platform = product.get("platform", "E-Commerce").capitalize()
+
+    subject = f"🚨 Price Drop Alert: {product_name} at ₹{current_price:,.2f}!"
     body = (
         f"Good news!\n\n"
-        f"The price for '{product['name']}' dropped to ₹{current_price:,.2f} (Target: ₹{product['target_price']:,.2f}) on {product['platform'].capitalize()}.\n\n"
-        f"Buy now: {product['url']}"
+        f"The price for '{product_name}' dropped to ₹{current_price:,.2f} (Target: ₹{target_price:,.2f}) on {platform}.\n\n"
+        f"Buy now: {product.get('url', '')}"
     )
     message = f"Subject: {subject}\n\n{body}"
 
@@ -72,7 +108,7 @@ def send_email_alert(product, current_price):
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
             server.login(sender_email, app_password)
             server.sendmail(sender_email, recipient_email, message)
-        print(f" -> Email alert sent for {product['name']}!")
+        print(f" -> Email alert sent for {product_name}!")
     except Exception as e:
         print(f" -> Failed to send email alert: {e}")
 
@@ -85,13 +121,17 @@ def send_telegram_alert(product, current_price):
         print(" -> Telegram secrets missing in environment. Skipping Telegram.")
         return
 
+    product_name = product.get("name", "Tracked Item")
+    target_price = product.get("target_price", 0)
+    platform = product.get("platform", "E-Commerce").capitalize()
+
     message = (
         f"🚨 *PRICE DROP ALERT!*\n\n"
-        f"📦 *Item:* {product['name']}\n"
+        f"📦 *Item:* {product_name}\n"
         f"🏷️ *Current Price:* ₹{current_price:,.2f}\n"
-        f"🎯 *Target Price:* ₹{product['target_price']:,.2f}\n"
-        f"🛒 *Platform:* {product['platform'].capitalize()}\n\n"
-        f"🔗 [Buy Now]({product['url']})"
+        f"🎯 *Target Price:* ₹{target_price:,.2f}\n"
+        f"🛒 *Platform:* {platform}\n\n"
+        f"🔗 [Buy Now]({product.get('url', '')})"
     )
 
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
@@ -100,7 +140,7 @@ def send_telegram_alert(product, current_price):
     try:
         res = requests.post(url, json=payload, timeout=10)
         if res.status_code == 200:
-            print(f" -> Telegram alert sent for {product['name']}!")
+            print(f" -> Telegram alert sent for {product_name}!")
         else:
             print(f" -> Telegram API error: {res.status_code}")
     except Exception as e:
@@ -118,12 +158,16 @@ def run_tracker():
     print(f"--- Tracking {len(products)} products ---\n")
 
     for product in products:
-        print(f"Checking: {product['name']} ({product['platform'].capitalize()})...")
+        name = product.get("name", "Unknown Product")
+        platform = product.get("platform", "Unknown Platform")
+        target_price = product.get("target_price", 0)
+
+        print(f"Checking: {name} ({platform.capitalize()})...")
         current_price = fetch_price(product)
         
         if current_price:
-            print(f" -> Current Price: ₹{current_price} | Target: ₹{product['target_price']}")
-            if current_price <= product["target_price"]:
+            print(f" -> Current Price: ₹{current_price} | Target: ₹{target_price}")
+            if current_price <= target_price:
                 print(f" 🚨 Price drop detected! Sending alerts...")
                 send_telegram_alert(product, current_price)
                 send_email_alert(product, current_price)
