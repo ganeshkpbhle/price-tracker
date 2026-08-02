@@ -7,14 +7,14 @@
   },
   {
     "name": "Samsung Galaxy Tab S10 Plus (Amazon)",
-    "platform": "Amazon",
+    "platform": "amazon",
     "url": "https://www.amazon.in/Samsung-Dynamic-Display-Storage-Platinum/dp/B0DHHB2YS7",
     "target_price": 90000.00
   },
   {
-    "name":"Samsung Galaxy Tab S10 Plus (FlipKart)",
-    "platform": "FlipKart",
-    "url":"https://www.flipkart.com/samsung-galaxy-tab-s10-s-pen-12-gb-ram-256-rom-12-4-inch-wi-fi-only-gaming-mediatek-dimensity-9300-tablet-platinum-silver/p/itm07fddd91caecf",
+    "name": "Samsung Galaxy Tab S10 Plus (FlipKart)",
+    "platform": "flipkart",
+    "url": "https://www.flipkart.com/samsung-galaxy-tab-s10-s-pen-12-gb-ram-256-rom-12-4-inch-wi-fi-only-gaming-tablet-platinum-silver/p/itm07fddd91caecf",
     "target_price": 90000.00
   }
 ]
