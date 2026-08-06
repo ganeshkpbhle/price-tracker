@@ -31,7 +31,10 @@ def fetch_price_via_proxy(product):
     # Enable JS rendering ONLY for Amazon; use fast standard proxy for Flipkart & BuyHatke to prevent 500 timeouts
     if api_key:
         print(f" -> Fetching via ScraperAPI proxy...")
-        if platform in ["flipkart", "buyhatke"]:
+        if platform == "buyhatke":
+            # Direct ScraperAPI to route through Indian residential IPs to fix HTTP 500
+            proxy_url = f"https://api.scraperapi.com?api_key={api_key}&url={raw_url}&country_code=in"
+        elif platform == "flipkart":
             proxy_url = f"https://api.scraperapi.com?api_key={api_key}&url={raw_url}"
         else:
             proxy_url = f"https://api.scraperapi.com?api_key={api_key}&url={raw_url}&render=true"
