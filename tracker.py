@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
 def clean_price_text(text):
     """Extracts clean float numbers from text like '₹85,399.00' -> 85399.0"""
     try:
@@ -18,41 +19,69 @@ def clean_price_text(text):
     except (ValueError, TypeError):
         return None
 
+
 def fetch_price_via_proxy(product):
-    """Fetches product HTML via ScraperAPI proxy network with optimized platform routing."""
+    """
+    Fetches product HTML via ScraperAPI proxy network.
+    Returns a tuple: (price, is_available)
+    """
     raw_url = product.get("url", "")
     platform = product.get("platform", "").lower()
     name = product.get("name", "Product")
     api_key = os.getenv("SCRAPER_API_KEY")
 
     if not raw_url:
-        return None
+        return None, False
 
-    # Enable JS rendering ONLY for Amazon; use fast standard proxy for Flipkart & BuyHatke to prevent 500 timeouts
+    # Enable JS rendering ONLY for Amazon; use fast standard proxy for Flipkart & BuyHatke
     if api_key:
-        print(f" -> Fetching via ScraperAPI proxy...")
+        print(" -> Fetching via ScraperAPI proxy...")
         if platform == "buyhatke":
-            # Direct ScraperAPI to route through Indian residential IPs to fix HTTP 500
             proxy_url = f"https://api.scraperapi.com?api_key={api_key}&url={raw_url}&country_code=in"
         elif platform == "flipkart":
             proxy_url = f"https://api.scraperapi.com?api_key={api_key}&url={raw_url}"
         else:
             proxy_url = f"https://api.scraperapi.com?api_key={api_key}&url={raw_url}&render=true"
     else:
-        print(f" -> Fetching directly...")
+        print(" -> Fetching directly...")
         proxy_url = raw_url
 
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/126.0.0.0 Safari/537.36"
+        )
     }
 
     try:
         response = requests.get(proxy_url, headers=headers, timeout=60)
         if response.status_code != 200:
             print(f"[{platform.upper()}] HTTP Error {response.status_code}")
-            return None
+            return None, False
 
         soup = BeautifulSoup(response.text, "html.parser")
+
+        # --- AVAILABILITY CHECK ---
+        is_available = True
+        oos_selectors = [
+            "#availability .a-color-price",      # Amazon ("Currently unavailable")
+            "#outOfStock",                       # Amazon out of stock wrapper
+            "div._16FRp0",                       # Flipkart "Currently Out of Stock"
+            "button._2KpZ6l._2U9uOA._3dGepF"     # Flipkart disabled / sold out button
+        ]
+
+        for oos_sel in oos_selectors:
+            el = soup.select_one(oos_sel)
+            if el and any(phrase in el.text.lower() for phrase in ["currently unavailable", "out of stock", "sold out"]):
+                is_available = False
+                break
+
+        # Fallback check on general availability text blocks
+        if is_available:
+            avail_div = soup.select_one("#availability") or soup.select_one(".availability")
+            if avail_div and any(phrase in avail_div.text.lower() for phrase in ["currently unavailable", "out of stock"]):
+                is_available = False
 
         # --- TIER 1: Explicit High-Priority Selectors ---
         selectors = []
@@ -85,18 +114,17 @@ def fetch_price_via_proxy(product):
         for selector in selectors:
             elements = soup.select(selector)
             for element in elements:
-                # Exclude EMI / Discount / Exchange text blocks
                 parent_text = element.parent.text if element.parent else ""
                 if any(k in parent_text.lower() for k in ["emi", "off", "exchange", "save", "per month"]):
                     continue
-                
+
                 price = clean_price_text(element.text)
                 if price and 50000 <= price <= 150000:
-                    return price
+                    return price, is_available
 
         # --- TIER 2: Contextual Container Parsing Fallback ---
         print(f"[{platform.upper()}] Specific selectors missed. Running Context-Scoped Parser...")
-        
+
         main_containers = soup.find_all(['div', 'main', 'section', 'span'])
         valid_prices = []
 
@@ -111,16 +139,16 @@ def fetch_price_via_proxy(product):
                     valid_prices.append(val)
 
         if valid_prices:
-            # Pick the most frequently reported valid price
             most_common = max(set(valid_prices), key=valid_prices.count)
-            return most_common
+            return most_common, is_available
 
         print(f"[{platform.upper()}] Could not locate valid product price.")
-        return None
+        return None, is_available
 
     except Exception as e:
         print(f"[{platform.upper()}] Error fetching {name}: {e}")
-        return None
+        return None, False
+
 
 def send_email_alert(product, current_price):
     sender_email = os.getenv("GMAIL_USER")
@@ -136,7 +164,12 @@ def send_email_alert(product, current_price):
     platform = product.get("platform", "E-Commerce").capitalize()
 
     subject = f"🚨 Price Drop Alert: {product_name} at ₹{current_price:,.2f}!"
-    body = f"Good news!\n\nThe price for '{product_name}' dropped to ₹{current_price:,.2f} (Target: ₹{target_price:,.2f}) on {platform}.\n\nBuy now: {product.get('url', '')}"
+    body = (
+        f"Good news!\n\n"
+        f"The item '{product_name}' is IN STOCK and dropped to ₹{current_price:,.2f} "
+        f"(Target: ₹{target_price:,.2f}) on {platform}.\n\n"
+        f"Buy now: {product.get('url', '')}"
+    )
 
     msg = MIMEText(body, 'plain', 'utf-8')
     msg['Subject'] = Header(subject, 'utf-8')
@@ -151,6 +184,7 @@ def send_email_alert(product, current_price):
     except Exception as e:
         print(f" -> Failed to send email: {e}")
 
+
 def send_telegram_alert(product, current_price):
     bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
@@ -164,8 +198,9 @@ def send_telegram_alert(product, current_price):
     platform = product.get("platform", "E-Commerce").capitalize()
 
     message = (
-        f"🚨 *PRICE DROP ALERT!*\n\n"
+        f"🚨 *IN-STOCK PRICE DROP ALERT!*\n\n"
         f"📦 *Item:* {product_name}\n"
+        f"⚡ *Status:* Available to Buy ✅\n"
         f"🏷️ *Current Price:* ₹{current_price:,.2f}\n"
         f"🎯 *Target Price:* ₹{target_price:,.2f}\n"
         f"🛒 *Platform:* {platform}\n\n"
@@ -184,6 +219,7 @@ def send_telegram_alert(product, current_price):
     except Exception as e:
         print(f" -> Failed to send Telegram alert: {e}")
 
+
 def run_tracker():
     if not os.path.exists("products.json"):
         print("Error: products.json missing!")
@@ -200,17 +236,22 @@ def run_tracker():
         target_price = product.get("target_price", 0)
 
         print(f"Checking: {name} ({platform.capitalize()})...")
-        current_price = fetch_price_via_proxy(product)
+        current_price, is_available = fetch_price_via_proxy(product)
 
-        if current_price:
-            print(f" -> Current Price: ₹{current_price:,.2f} | Target: ₹{target_price:,.2f}")
+        if not is_available:
+            print(" -> Status: ❌ OUT OF STOCK")
+        elif current_price:
+            print(f" -> Status: ✅ IN STOCK | Price: ₹{current_price:,.2f} | Target: ₹{target_price:,.2f}")
             if current_price <= target_price:
-                print(" 🚨 Price drop detected! Sending alerts...")
+                print(" 🚨 In-stock deal detected! Sending alerts...")
                 send_telegram_alert(product, current_price)
                 send_email_alert(product, current_price)
+            else:
+                print(" -> In stock, but waiting for target price.")
         else:
             print(" -> Could not retrieve price.")
         print("-" * 40)
+
 
 if __name__ == "__main__":
     run_tracker()

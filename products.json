@@ -1,18 +1,30 @@
 [
   {
-    "name": "Samsung Galaxy Tab S10 Plus (BuyHatke)",
+    "name": "Samsung Galaxy Tab S10 Plus (BuyHatke) Silver",
     "platform": "buyhatke",
     "url": "https://buyhatke.com/amazon-samsung-galaxy-tab-s10-plus-smartchoice-s-pen-in-box-31-5-cm-12-4-inch-dynamic-amoled-2x-display-12-gb-ram-256-gb-storage-wi-fi-tablet-plati-price-in-india-63-70726104",
     "target_price": 78000.00
   },
   {
-    "name": "Samsung Galaxy Tab S10 Plus (Amazon)",
+    "name": "Samsung Galaxy Tab S10 Plus (BuyHatke) Monostone",
+    "platform": "buyhatke",
+    "url": "https://buyhatke.com/amazon-samsung-galaxy-tab-s10-plus-smartchoice-s-pen-in-box-31-5-cm-12-4-inch-dynamic-amoled-2x-display-12-gb-ram-256-gb-storage-wi-fi-tablet-moons-price-in-india-63-70726346",
+    "target_price": 78000.00
+  },
+  {
+    "name": "Samsung Galaxy Tab S10 Plus (Amazon) Silver",
     "platform": "amazon",
     "url": "https://www.amazon.in/dp/B0DHHB2YS7",
     "target_price": 78000.00
   },
   {
-    "name": "Samsung Galaxy Tab S10 Plus (FlipKart)",
+    "name": "Samsung Galaxy Tab S10 Plus (Amazon) Monostone",
+    "platform": "amazon",
+    "url": "https://www.amazon.in/dp/B0DHH97DM5",
+    "target_price": 78000.00
+  },
+  {
+    "name": "Samsung Galaxy Tab S10 Plus (FlipKart) Silver",
     "platform": "flipkart",
     "url": "https://www.flipkart.com/samsung-galaxy-tab-s10-s-pen-12-gb-ram-256-rom-12-4-inch-wi-fi-only-gaming-tablet-platinum-silver/p/itm07fddd91caecf",
     "target_price": 78000.00
